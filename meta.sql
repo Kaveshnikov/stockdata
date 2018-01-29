@@ -12,7 +12,7 @@ CREATE TABLE trade(
   transaction VARCHAR,
   owner_type VARCHAR,
   shares_traded BIGINT NOT NULL,
-  last_price DECIMAL(8, 4) NOT NULL,
+  last_price DECIMAL(8, 4),
   shares_held BIGINT NOT NULL
 );
 

@@ -7,7 +7,7 @@ import logging
 import asyncpg
 from multiprocessing import Pool
 from datetime import datetime
-from lxml.html import fromstring, HtmlElement
+from lxml.html import fromstring
 from typing import List
 from collections import namedtuple
 
@@ -57,15 +57,7 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: float = 10):
         raise
 
 
-async def insert_stock_data(stock: str, prices: List[Price]) -> int:
-    conn = await asyncpg.connect(
-        host='localhost',
-        user='stockdata',
-        password='stockdata',
-        database='stockdata',
-        timeout=30
-    )
-
+async def insert_stock_data(conn: asyncpg.Connection, stock: str, prices: List[Price]) -> int:
     async with conn.transaction():
         await conn.execute("insert into stock(name) values ($1)", stock)
 
@@ -74,13 +66,12 @@ async def insert_stock_data(stock: str, prices: List[Price]) -> int:
             "insert into price values ($1, $2, $3, $4, $5, $6, $7)",
             [(stock_id, *price) for price in prices]
         )
+
         return stock_id
 
 
-async def get_prices(stock: str) -> List[Price]:
-    async with aiohttp.ClientSession() as session:
-        html = await fetch(session, 'http://www.nasdaq.com/symbol/{}/historical'.format(stock))
-
+async def get_prices(session: aiohttp.ClientSession, stock: str) -> List[Price]:
+    html = await fetch(session, 'http://www.nasdaq.com/symbol/{}/historical'.format(stock))
     doc = fromstring(html)
 
     # quotes_content_left_pnlAJAX - название контейнера, в котором хранится таблица
@@ -106,10 +97,67 @@ async def get_prices(stock: str) -> List[Price]:
     return prices
 
 
-async def work_async(stock: str):
-    prices = await get_prices(stock)
-    await insert_stock_data(stock, prices)
+async def get_trades(session: aiohttp.ClientSession, url: str) -> List[Trade]:
+    trades = []
+    past_pages = 0
+    next_page = fromstring('<a href="{}"></a>'.format(url))  # Данный сурогат использован как заглушка для while
 
+    # Здесь решено отказаться от рекурсии, как задел на будущее, если придется обрабатывать много страниц
+    while past_pages < 10 and next_page.tag == 'a':
+        html = await fetch(session, next_page.get('href'))
+        doc = fromstring(html)
+
+        # Здесь реализован поиск по классу, т. к. в разметке у ближайших контейнеров к таблице нет id,
+        # а к данному класу пренадлежит только таблица
+        table = doc.find_class('certain-width')[0]
+        # Шапку таблицы не берем
+        rows = table.getchildren()[1:]
+
+        for row in rows:
+            # Используем именно text_content() потому, что в первом столбце лежит ссылка
+            columns = [column.text_content().strip() for column in row.iterchildren()]
+            trades.append(Trade(
+                insider=columns[0],
+                relation=columns[1] if columns[1] else None,
+                last_date=datetime.strptime(columns[2].replace('/', ''), '%m%d%Y') if columns[2] else None,
+                transaction=columns[3] if columns[3] else None,
+                owner_type=columns[4] if columns[4] else None,
+                shares_traded=int(columns[5].replace(',', '')),
+                last_price=float(columns[6].replace(',', '')) if columns[6] else None,
+                shares_held=int(columns[7].replace(',', ''))
+            ))
+
+        # quotes_content_left_lb_NextPage - либо ссылка на следующую страницу, либо <span>, если это последняя
+        next_page = doc.get_element_by_id('quotes_content_left_lb_NextPage')
+        past_pages += 1
+
+    return trades
+
+
+async def insert_trades(conn: asyncpg.Connection, trades: List[Trade], stock_id: int):
+    async with conn.transaction():
+        await conn.executemany(
+            '''insert into trade(stock, insider, relation, last_date, transaction,
+                  owner_type, shares_traded, last_price, shares_held)
+                  values ($1, $2, $3, $4, $5, $6, $7, $8, $9)''',
+            [(stock_id, *trade) for trade in trades]
+        )
+
+
+async def work_async(stock: str):
+    async with aiohttp.ClientSession() as session:
+        prices = await get_prices(session, stock)
+        conn = await asyncpg.connect(
+            host='localhost',
+            user='stockdata',
+            password='stockdata',
+            database='stockdata',
+            timeout=10
+        )
+        stock_id = await insert_stock_data(conn, stock, prices)
+        trades = await get_trades(session, 'http://www.nasdaq.com/symbol/{}/insider-trades'.format(stock))
+        await insert_trades(conn, trades, stock_id)
+        await conn.close(timeout=10)
 
 
 def work(stock: str):
