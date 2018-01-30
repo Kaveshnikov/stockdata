@@ -18,11 +18,12 @@ CREATE TABLE trade(
 
 CREATE TABLE price(
   stock INTEGER CONSTRAINT fk_price_stock REFERENCES stock (id),
-  date DATE NOT NULL CONSTRAINT uq_price_date UNIQUE,
+  date DATE NOT NULL,
   open DECIMAL(8, 4) NOT NULL,
   high DECIMAL(8, 4) NOT NULL,
   low DECIMAL(8, 4) NOT NULL,
   close DECIMAL(8, 4) NOT NULL,
-  volume BIGINT NOT NULL
+  volume BIGINT NOT NULL,
+  CONSTRAINT uq_price_stock_date UNIQUE(stock, date)
 );
 

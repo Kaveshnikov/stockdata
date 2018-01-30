@@ -1,1 +1,3 @@
 cvx
+aapl
+goog

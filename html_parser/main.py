@@ -147,6 +147,7 @@ async def insert_trades(conn: asyncpg.Connection, trades: List[Trade], stock_id:
 async def work_async(stock: str):
     async with aiohttp.ClientSession() as session:
         prices = await get_prices(session, stock)
+        trades = await get_trades(session, 'http://www.nasdaq.com/symbol/{}/insider-trades'.format(stock))
         conn = await asyncpg.connect(
             host='localhost',
             user='stockdata',
@@ -154,10 +155,28 @@ async def work_async(stock: str):
             database='stockdata',
             timeout=10
         )
+
         stock_id = await insert_stock_data(conn, stock, prices)
-        trades = await get_trades(session, 'http://www.nasdaq.com/symbol/{}/insider-trades'.format(stock))
         await insert_trades(conn, trades, stock_id)
         await conn.close(timeout=10)
+
+
+async def clear_db():
+    # Так как нужно как-то обрабатывать ситуацию, когда парсер запускается с имеющимися в БД данными
+    # решено просто удалять старые. Если оставить старые записи, то не получается бороться с дубликатами
+    # в таблице trades, так как владелец теоретически мог совершить две абсолютно одинаковые финансовые
+    # операции.
+
+    conn = await asyncpg.connect(
+        host='localhost',
+        user='stockdata',
+        password='stockdata',
+        database='stockdata',
+        timeout=10
+    )
+
+    async with conn.transaction():
+        await conn.execute("delete from price; delete from trade; delete from stock;")
 
 
 def work(stock: str):
@@ -178,10 +197,11 @@ def main():
         loger.error('File not found')
         exit(1)
 
-    # pool = Pool(args.workers)
-    # pool.map(work, stocks)
-    work(stocks[0])
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(clear_db())
 
+    pool = Pool(args.workers)
+    pool.map(work, stocks)
 
 
 if __name__ == '__main__':
